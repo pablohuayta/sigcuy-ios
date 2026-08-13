@@ -1,0 +1,111 @@
+# Compilación de SigCuy para el simulador de iOS.
+#
+# Codemagic ejecuta esto en Macs reales de su nube, así que no hace falta
+# tener macOS ni Xcode. Las compilaciones para simulador NO se firman, por lo
+# que tampoco se necesita la licencia de Apple Developer (99 USD/año).
+#
+# El resultado es `Runner.app` comprimido, que es exactamente lo que acepta
+# Appetize.io para correr el simulador dentro del navegador.
+#
+# Uso:
+#   1. Sube este proyecto a GitHub.
+#   2. En codemagic.io conecta el repositorio.
+#   3. Ejecuta el workflow "ios-simulador".
+#   4. Descarga SigCuy-simulador.zip de los artefactos.
+#   5. Súbelo a appetize.io y comparte el enlace.
+
+workflows:
+  ios-simulador:
+    name: SigCuy · build para simulador iOS
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+
+    environment:
+      flutter: stable
+      xcode: latest
+      vars:
+        # Token de la API de Appetize. Se define en Codemagic, en
+        # "Environment variables", marcado como secreto. Si no existe, el
+        # último paso se salta y solo descargas el zip a mano.
+        APPETIZE_TOKEN: $APPETIZE_TOKEN
+
+    scripts:
+      - name: Comprobar el entorno
+        script: |
+          flutter --version
+          flutter doctor -v
+
+      - name: Obtener dependencias
+        script: flutter pub get
+
+      - name: Generar la carpeta ios si no existe
+        script: |
+          if [ ! -d "ios" ]; then
+            echo "No hay carpeta ios; generándola."
+            flutter create --platforms=ios .
+          fi
+
+      - name: Compilar para el simulador
+        script: flutter build ios --simulator
+
+      - name: Empaquetar el .app
+        script: |
+          cd build/ios/iphonesimulator
+          zip -r -y SigCuy-simulador.zip Runner.app
+
+      - name: Publicar en Appetize
+        script: |
+          if [ -z "$APPETIZE_TOKEN" ]; then
+            echo "Sin APPETIZE_TOKEN: me salto la publicación."
+            echo "Descarga el zip de los artefactos y súbelo a mano en appetize.io."
+            exit 0
+          fi
+
+          ZIP="build/ios/iphonesimulator/SigCuy-simulador.zip"
+
+          # Si ya existe una app publicada, se actualiza en lugar de crear
+          # otra: así el enlace que le pasaste al ingeniero sigue sirviendo.
+          if [ -n "$APPETIZE_PUBLIC_KEY" ]; then
+            URL="https://api.appetize.io/v1/apps/$APPETIZE_PUBLIC_KEY"
+          else
+            URL="https://api.appetize.io/v1/apps"
+          fi
+
+          RESPUESTA=$(curl -sS --http1.1 "$URL" \
+            -u "$APPETIZE_TOKEN:" \
+            -F "file=@$ZIP" \
+            -F "platform=ios")
+
+          echo "$RESPUESTA"
+          echo "$RESPUESTA" > appetize-respuesta.json
+
+          # El publicKey de la respuesta es el que hay que guardar como
+          # APPETIZE_PUBLIC_KEY para que la próxima build actualice esta misma app.
+          echo "Guarda el publicKey de arriba en las variables de entorno."
+
+    artifacts:
+      - build/ios/iphonesimulator/SigCuy-simulador.zip
+      - appetize-respuesta.json
+
+  web:
+    name: SigCuy · build web (PWA)
+    instance_type: linux_x2
+    max_build_duration: 20
+
+    environment:
+      flutter: stable
+
+    scripts:
+      - name: Obtener dependencias
+        script: flutter pub get
+
+      - name: Compilar la web
+        script: flutter build web --release
+
+      - name: Empaquetar
+        script: |
+          cd build/web
+          zip -r -y ../../SigCuy-web.zip .
+
+    artifacts:
+      - SigCuy-web.zip
