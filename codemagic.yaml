@@ -23,11 +23,13 @@ workflows:
     environment:
       flutter: stable
       xcode: latest
-      vars:
-        # Token de la API de Appetize. Se define en Codemagic, en
-        # "Environment variables", marcado como secreto. Si no existe, el
-        # último paso se salta y solo descargas el zip a mano.
-        APPETIZE_TOKEN: $APPETIZE_TOKEN
+      groups:
+        # Grupo de variables definido en Codemagic → Environment variables.
+        # Debe contener:
+        #   APPETIZE_TOKEN       token de la API de Appetize (marcar Secure)
+        #   APPETIZE_PUBLIC_KEY  identificador de la app ya subida
+        # Si el grupo no existe o está vacío, la publicación se salta sola.
+        - appetize
 
     scripts:
       - name: Comprobar el entorno
@@ -76,16 +78,68 @@ workflows:
             -F "file=@$ZIP" \
             -F "platform=ios")
 
-          echo "$RESPUESTA"
           echo "$RESPUESTA" > appetize-respuesta.json
 
-          # El publicKey de la respuesta es el que hay que guardar como
-          # APPETIZE_PUBLIC_KEY para que la próxima build actualice esta misma app.
-          echo "Guarda el publicKey de arriba en las variables de entorno."
+          if echo "$RESPUESTA" | grep -q '"publicKey"'; then
+            CLAVE=$(echo "$RESPUESTA" | sed -n 's/.*"publicKey":"\([^"]*\)".*/\1/p')
+            echo "✅ Publicado en Appetize."
+            echo "   Enlace: https://appetize.io/app/$CLAVE"
+            if [ -z "$APPETIZE_PUBLIC_KEY" ]; then
+              echo "   Guarda $CLAVE como APPETIZE_PUBLIC_KEY para que las"
+              echo "   próximas builds actualicen esta misma app y el enlace"
+              echo "   que ya compartiste siga sirviendo."
+            fi
+          else
+            echo "⚠️ Appetize devolvió algo inesperado:"
+            echo "$RESPUESTA"
+          fi
 
     artifacts:
       - build/ios/iphonesimulator/SigCuy-simulador.zip
       - appetize-respuesta.json
+
+  ios-ipa:
+    name: SigCuy · IPA sin firmar (entregable)
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+
+    environment:
+      flutter: stable
+      xcode: latest
+
+    scripts:
+      - name: Obtener dependencias
+        script: flutter pub get
+
+      - name: Compilar en modo release sin firmar
+        script: flutter build ios --release --no-codesign
+
+      - name: Empaquetar el .ipa
+        # `flutter build ipa` intenta exportar el archivo firmado y falla sin
+        # certificado. Un .ipa no es más que un zip con la carpeta Payload
+        # dentro, así que se construye a mano y siempre funciona.
+        script: |
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          cp -r Runner.app Payload/
+          zip -r -y SigCuy-sin-firmar.ipa Payload
+          ls -lh SigCuy-sin-firmar.ipa
+
+      - name: Aviso sobre el archivo generado
+        script: |
+          echo "==============================================================="
+          echo " SigCuy-sin-firmar.ipa es un entregable, NO un instalable."
+          echo ""
+          echo " Contiene la aplicación compilada para iPhone en modo release,"
+          echo " pero sin la firma de Apple. Sirve como evidencia de producto"
+          echo " y para inspeccionar el binario."
+          echo ""
+          echo " Para que se pueda instalar en un iPhone hace falta el Apple"
+          echo " Developer Program (99 USD/año) y distribuirlo por TestFlight."
+          echo "==============================================================="
+
+    artifacts:
+      - build/ios/iphoneos/SigCuy-sin-firmar.ipa
 
   web:
     name: SigCuy · build web (PWA)
